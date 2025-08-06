@@ -1,0 +1,16 @@
+project_name: notionmd-cli
+
+builds:
+  - main: ./main.go
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - format: tar.gz
+    files:
+      - notionmd-cli
+
+release:
+  github:
+    owner: christhomas
+    name: notionmd-cli

@@ -1,0 +1,6 @@
+github.com/brittonhayes/notionmd v0.8.0 h1:K2FQlL13+Ydaf6LGdCUR76k/G44FfBK20QavHTVm3og=
+github.com/brittonhayes/notionmd v0.8.0/go.mod h1:r6V8qENKn8hyDEDZsUJFAnY9+fdyEqPA57vwIvEeMpA=
+github.com/dstotijn/go-notion v0.11.0 h1:v+ZUiyKd+UBk1SRkUSa86QOU5DP8ziSI4E7NFIS4rRU=
+github.com/dstotijn/go-notion v0.11.0/go.mod h1:FWfmGRnE8Drm6CnNQQO7slXcu1lrKmRY2KfFgeq6Z2g=
+github.com/gomarkdown/markdown v0.0.0-20240723152757-afa4a469d4f9 h1:TRYrIWJziqvMVn1owO8bmkDJTlMQFYnf74yhD8LXfgU=
+github.com/gomarkdown/markdown v0.0.0-20240723152757-afa4a469d4f9/go.mod h1:JDGcbDT52eL4fju3sZ4TeHGsQwhG9nbDV21aMyhwPoA=
