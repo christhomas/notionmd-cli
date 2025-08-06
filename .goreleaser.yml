@@ -4,11 +4,10 @@ builds:
   - main: ./main.go
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
+    binary: notionmd-cli
 
 archives:
   - format: tar.gz
-    files:
-      - notionmd-cli
 
 release:
   github:
