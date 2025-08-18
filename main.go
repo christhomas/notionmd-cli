@@ -17,65 +17,14 @@ import (
 	"github.com/dstotijn/go-notion"
 )
 
-// rewriteContent applies rewrite-text mapping from a file to the markdown content.
-func rewriteContent(mdContent []byte, mdPath, rewriteLink string) ([]byte, error) {
-	data, err := os.ReadFile(rewriteLink)
-	if err != nil {
-		return nil, fmt.Errorf("Error reading rewrite-text mapping file: %w", err)
-	}
-
-	var singlePage map[string]string
-	if err := json.Unmarshal(data, &singlePage); err == nil {
-		debugLog("[DEBUG] Detected single-page rewrite mapping with %d links\n", len(singlePage))
-		return []byte(rewriteTextMap(string(mdContent), singlePage)), nil
-	}
-
-	var multiPage map[string]map[string]string
-	if err := json.Unmarshal(data, &multiPage); err == nil {
-		debugLog("[DEBUG] Detected multi-page rewrite mapping. Searching for a matching page key in: %s\n", mdPath)
-		var (
-			matchedKey string
-			pageMap    map[string]string
-		)
-		for key, candidate := range multiPage {
-			if strings.Contains(mdPath, key) {
-				matchedKey = key
-				pageMap = candidate
-				break
-			}
-		}
-		if matchedKey != "" {
-			debugLog("[DEBUG] Found %d links for page key '%s' (matched in: %s)\n", len(pageMap), matchedKey, mdPath)
-			return []byte(rewriteTextMap(string(mdContent), pageMap)), nil
-		}
-		debugLog("[DEBUG] No mapping found for any key in '%s'. No rewrite applied.\n", mdPath)
-		return mdContent, nil // no mapping for this page, return original content
-	}
-	debugLog("[DEBUG] Could not decode rewrite-text mapping file as single or multi-page mapping")
-	return nil, fmt.Errorf("Error decoding rewrite-text mapping file as single or multi-page mapping")
-}
-
 var (
 	debugEnabled bool
 	Version      = "dev"
 )
 
-// debugLog prints debug messages if debugEnabled is true.
-func debugLog(format string, args ...interface{}) {
-	if debugEnabled {
-		fmt.Printf(format, args...)
-	}
-}
-
-// rewriteTextMap replaces markdown links according to the mapping
-func rewriteTextMap(content string, linkMap map[string]string) string {
-	fmt.Printf("Rewriting %d links:\n", len(linkMap))
-	for old, new := range linkMap {
-		fmt.Printf("Replacing:  '%s' -> '%s'\n", old, new)
-		// Replace text if present anywhere
-		content = strings.ReplaceAll(content, old, new)
-	}
-	return content
+// PageMetadata is the metadata stored in the code block
+type PageMetadata struct {
+	ContentHash string `json:"content_hash"`
 }
 
 func main() {
@@ -148,6 +97,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Debug all block types
+	debugLog("Found %d blocks after markdown conversion\n", len(contentBlocks))
+	for i, block := range contentBlocks {
+		debugLog("Block %d is of type: %T\n", i, block)
+
+		// Check specifically for code blocks
+		if codeBlock, ok := block.(*notion.CodeBlock); ok {
+			debugLog("Found code block at index %d\n", i)
+			if codeBlock.Language == nil {
+				debugLog("  Language is nil\n")
+			} else {
+				debugLog("  Language is '%s'\n", *codeBlock.Language)
+			}
+		}
+	}
+
 	// --- content_hash optimization ---
 	// Compute hash of the input markdown file
 	hashBytes := sha256.Sum256(mdContent)
@@ -183,14 +148,13 @@ func main() {
 		fmt.Printf("Page hash (Property Name: '%s'): %s\n", contentHashPropertyName, propertyHash)
 		fmt.Printf("Content hash: %s\n", contentHash)
 		if propertyHash == contentHash {
-			fmt.Println("⚠️ No content change detected. Skipping update.\n")
+			fmt.Println("⚠️ No content change detected. Skipping update.")
 			os.Exit(0)
 		}
 		if err := setProperty(client, ctx, pageID, contentHashPropertyName, contentHash); err != nil {
 			fmt.Printf("Warning: failed to set '%s' property: %s\n", contentHashPropertyName, err)
 		}
 	}
-	// --- end content_hash optimization ---
 
 	if replaceF {
 		if err := clearPageContent(token, pageID); err != nil {
@@ -204,7 +168,86 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("✅ Page updated successfully.\n")
+	fmt.Println("✅ Page updated successfully.")
+}
+
+// rewriteContent applies rewrite-text mapping from a file to the markdown content.
+func rewriteContent(mdContent []byte, mdPath, rewriteLink string) ([]byte, error) {
+	data, err := os.ReadFile(rewriteLink)
+	if err != nil {
+		return nil, fmt.Errorf("Error reading rewrite-text mapping file: %w", err)
+	}
+
+	var singlePage map[string]string
+	if err := json.Unmarshal(data, &singlePage); err == nil {
+		debugLog("[DEBUG] Detected single-page rewrite mapping with %d links\n", len(singlePage))
+		return []byte(rewriteTextMap(string(mdContent), singlePage)), nil
+	}
+
+	var multiPage map[string]map[string]string
+	if err := json.Unmarshal(data, &multiPage); err == nil {
+		debugLog("[DEBUG] Detected multi-page rewrite mapping. Searching for a matching page key in: %s\n", mdPath)
+		var (
+			matchedKey string
+			pageMap    map[string]string
+		)
+		for key, candidate := range multiPage {
+			if strings.Contains(mdPath, key) {
+				matchedKey = key
+				pageMap = candidate
+				break
+			}
+		}
+		if matchedKey != "" {
+			debugLog("[DEBUG] Found %d links for page key '%s' (matched in: %s)\n", len(pageMap), matchedKey, mdPath)
+			return []byte(rewriteTextMap(string(mdContent), pageMap)), nil
+		}
+		debugLog("[DEBUG] No mapping found for any key in '%s'. No rewrite applied.\n", mdPath)
+		return mdContent, nil // no mapping for this page, return original content
+	}
+	debugLog("[DEBUG] Could not decode rewrite-text mapping file as single or multi-page mapping")
+	return nil, fmt.Errorf("Error decoding rewrite-text mapping file as single or multi-page mapping")
+}
+
+// debugLog prints debug messages if debugEnabled is true.
+func debugLog(format string, args ...interface{}) {
+	if debugEnabled {
+		fmt.Printf(format, args...)
+	}
+}
+
+// mapLanguageToNotionCompatible maps common language identifiers to Notion-compatible values
+func mapLanguageToNotionCompatible(lang string) string {
+	langMap := map[string]string{
+		"sh":   "shell",
+		"bash": "bash",
+		"zsh":  "shell",
+		"js":   "javascript",
+		"ts":   "typescript",
+		"py":   "python",
+		"rb":   "ruby",
+		"cs":   "c#",
+		"cpp":  "c++",
+		"yml":  "yaml",
+		"text": "plain text",
+		"txt":  "plain text",
+	}
+
+	if mapped, ok := langMap[lang]; ok {
+		return mapped
+	}
+	return lang
+}
+
+// rewriteTextMap replaces markdown links according to the mapping
+func rewriteTextMap(content string, linkMap map[string]string) string {
+	fmt.Printf("Rewriting %d links:\n", len(linkMap))
+	for old, new := range linkMap {
+		fmt.Printf("Replacing:  '%s' -> '%s'\n", old, new)
+		// Replace text if present anywhere
+		content = strings.ReplaceAll(content, old, new)
+	}
+	return content
 }
 
 // filterTitleBlock checks if the first block is a title node, removes and returns it. Otherwise returns nil, blocks.
@@ -218,10 +261,34 @@ func filterTitleBlock(blocks []notion.Block) (notion.Block, []notion.Block) {
 	return nil, blocks
 }
 
+// processCodeBlock handles both pointer and non-pointer code blocks and returns a non-pointer type
+func processCodeBlock(i int, codeBlock notion.CodeBlock) notion.CodeBlock {
+	defaultLang := "plain text"
+	if codeBlock.Language == nil {
+		codeBlock.Language = &defaultLang
+		fmt.Printf("⚠️  Fixed code block at index %d: set nil language to '%s'\n", i, defaultLang)
+	} else {
+		// Map language to Notion-compatible value
+		originalLang := *codeBlock.Language
+		mappedLang := mapLanguageToNotionCompatible(originalLang)
+		if mappedLang != originalLang {
+			*codeBlock.Language = mappedLang
+			fmt.Printf("⚠️  Fixed code block at index %d: mapped language from '%s' to '%s'\n", i, originalLang, mappedLang)
+		}
+	}
+	fmt.Printf("⚠️  Code block at index %d has language: %s\n", i, *codeBlock.Language)
+	return codeBlock
+}
+
 // validateContentBlocks scans and patches Notion blocks for known API problems (e.g., empty bulleted list items)
 func validateContentBlocks(blocks []notion.Block) []notion.Block {
 	var patched []notion.Block
 	for i, block := range blocks {
+		// Convert pointer to non-pointer type
+		if _, ok := block.(*notion.CodeBlock); ok {
+			block = notion.CodeBlock(*block.(*notion.CodeBlock))
+		}
+
 		switch b := block.(type) {
 		case notion.BulletedListItemBlock:
 			if len(b.RichText) == 0 || (len(b.RichText) == 1 && b.RichText[0].PlainText == "") {
@@ -240,6 +307,9 @@ func validateContentBlocks(blocks []notion.Block) []notion.Block {
 			if len(b.Children) > 0 {
 				b.Children = validateContentBlocks(b.Children)
 			}
+			patched = append(patched, b)
+		case notion.CodeBlock:
+			b = processCodeBlock(i, b)
 			patched = append(patched, b)
 		default:
 			// TODO: add more block type checks as needed
@@ -341,11 +411,6 @@ func setProperty(client *notion.Client, ctx context.Context, pageID, propName, v
 		},
 	})
 	return err
-}
-
-// PageMetadata is the metadata stored in the code block
-type PageMetadata struct {
-	ContentHash string `json:"content_hash"`
 }
 
 // clearPageContent deletes all child blocks of the given page using go-notion.
