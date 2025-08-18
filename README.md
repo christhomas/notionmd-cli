@@ -14,6 +14,13 @@ cd notionmd-cli
 go build -o notionmd-cli
 ```
 
+To override the version (shown with --version/-v), build with:
+
+```sh
+go build -ldflags "-X main.Version=1.2.3" -o notionmd-cli
+```
+Replace `1.2.3` with your desired version string.
+
 ## Usage
 
 You can run directly with Go or use the compiled binary.
@@ -39,6 +46,7 @@ go run main.go --token <token> --page <page_id> --md <markdown-file> [flags]
 - `--rewrite-text <mapping.json>`: Path to JSON file mapping text to rewrite in the markdown file (see below)
 - `--dry-run`: Run all logic except Notion sync (no changes will be made to Notion)
 - `--debug`: Enable debug output to stdout
+- `--version`, `-v`: Print program version and exit
 
 ### Examples
 

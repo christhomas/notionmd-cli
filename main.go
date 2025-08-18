@@ -55,7 +55,10 @@ func rewriteContent(mdContent []byte, mdPath, rewriteLink string) ([]byte, error
 	return nil, fmt.Errorf("Error decoding rewrite-link mapping file as single or multi-page mapping")
 }
 
-var debugEnabled bool
+var (
+	debugEnabled bool
+	Version      = "dev"
+)
 
 // debugLog prints debug messages if debugEnabled is true.
 func debugLog(format string, args ...interface{}) {
@@ -87,6 +90,7 @@ func main() {
 		rewriteText  string
 		dryRun       bool
 		debugFlag    bool
+		version      bool
 	)
 	pflag.StringVar(&token, "token", "", "Notion integration token")
 	pflag.StringVar(&pageID, "page", "", "Target Notion page ID")
@@ -98,14 +102,20 @@ func main() {
 	pflag.StringVar(&rewriteText, "rewrite-text", "", "Path to JSON file mapping links to rewrite in the markdown file")
 	pflag.BoolVar(&dryRun, "dry-run", false, "Run all logic except Notion sync (no changes will be made to Notion)")
 	pflag.BoolVar(&debugFlag, "debug", false, "Enable debug output")
+	pflag.BoolVarP(&version, "version", "v", false, "Print version and exit")
 	pflag.Parse()
+
+	if version {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
 
 	debugEnabled = debugFlag
 
 	debugLog("Given: \n--token '%s' \n--page '%s' \n--md '%s' \n--append '%t' \n--replace '%t' \n--use-hash '%t' \n--hash-property '%s' \n--rewrite-link '%s'\n", token, pageID, mdPath, appendF, replaceF, useHash, hashProperty, rewriteText)
 
-	if token == "" || pageID == "" || mdPath == "" {
-		fmt.Println("Usage: notionmd-cli --token <token> --page <page_id> --md <markdown-file> [--append|--replace] [--use-hash <optional:property_name>] [--rewrite-link <mapping.json>]")
+	if token == "" || pageID == "" || mdPath == "" || len(os.Args) == 1 {
+		pflag.Usage()
 		os.Exit(1)
 	}
 
