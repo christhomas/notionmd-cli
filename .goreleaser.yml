@@ -5,6 +5,7 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     binary: notionmd-cli
+    ldflags: -X main.Version={{.Version}}
 
 archives:
   - format: tar.gz
