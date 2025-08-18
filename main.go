@@ -156,6 +156,9 @@ func main() {
 	client := notion.NewClient(token)
 	ctx := context.Background()
 
+	// Validate and patch Notion blocks before sending to API
+	contentBlocks = validateAndPatchBlocks(contentBlocks)
+
 	if dryRun {
 		fmt.Println("[DRY RUN] All parsing, conversion, and hash logic completed. No changes made to Notion.")
 		return
@@ -196,6 +199,37 @@ func main() {
 	}
 
 	fmt.Println("✅ Page updated successfully.\n")
+}
+
+// validateAndPatchBlocks scans and patches Notion blocks for known API problems (e.g., empty bulleted list items)
+func validateAndPatchBlocks(blocks []notion.Block) []notion.Block {
+	var patched []notion.Block
+	for i, block := range blocks {
+		switch b := block.(type) {
+		case notion.BulletedListItemBlock:
+			if len(b.RichText) == 0 || (len(b.RichText) == 1 && b.RichText[0].PlainText == "") {
+				fmt.Printf("⚠️  Skipping empty bulleted list item at index %d\n", i)
+				continue
+			}
+			if len(b.Children) > 0 {
+				b.Children = validateAndPatchBlocks(b.Children)
+			}
+			patched = append(patched, b)
+		case notion.NumberedListItemBlock:
+			if len(b.RichText) == 0 || (len(b.RichText) == 1 && b.RichText[0].PlainText == "") {
+				fmt.Printf("⚠️  Skipping empty numbered list item at index %d\n", i)
+				continue
+			}
+			if len(b.Children) > 0 {
+				b.Children = validateAndPatchBlocks(b.Children)
+			}
+			patched = append(patched, b)
+		default:
+			// TODO: add more block type checks as needed
+			patched = append(patched, block)
+		}
+	}
+	return patched
 }
 
 // printTitle prints a detailed operation title based on flags and arguments
