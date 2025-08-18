@@ -157,10 +157,16 @@ func main() {
 	ctx := context.Background()
 
 	// Validate and patch Notion blocks before sending to API
-	contentBlocks = validateAndPatchBlocks(contentBlocks)
+	var titleBlock notion.Block
+	contentBlocks = validateContentBlocks(contentBlocks)
+	titleBlock, contentBlocks = filterTitleBlock(contentBlocks)
+	if titleBlock != nil {
+		updatePageTitle(client, ctx, pageID, titleBlock)
+	}
 
 	if dryRun {
 		fmt.Println("[DRY RUN] All parsing, conversion, and hash logic completed. No changes made to Notion.")
+		fmt.Printf("[MD CONTENT]\n%s\n\n", mdContent)
 		return
 	}
 
@@ -201,8 +207,19 @@ func main() {
 	fmt.Println("✅ Page updated successfully.\n")
 }
 
-// validateAndPatchBlocks scans and patches Notion blocks for known API problems (e.g., empty bulleted list items)
-func validateAndPatchBlocks(blocks []notion.Block) []notion.Block {
+// filterTitleBlock checks if the first block is a title node, removes and returns it. Otherwise returns nil, blocks.
+func filterTitleBlock(blocks []notion.Block) (notion.Block, []notion.Block) {
+	if len(blocks) == 0 {
+		return nil, blocks
+	}
+	if _, ok := blocks[0].(notion.Heading1Block); ok {
+		return blocks[0], blocks[1:]
+	}
+	return nil, blocks
+}
+
+// validateContentBlocks scans and patches Notion blocks for known API problems (e.g., empty bulleted list items)
+func validateContentBlocks(blocks []notion.Block) []notion.Block {
 	var patched []notion.Block
 	for i, block := range blocks {
 		switch b := block.(type) {
@@ -212,7 +229,7 @@ func validateAndPatchBlocks(blocks []notion.Block) []notion.Block {
 				continue
 			}
 			if len(b.Children) > 0 {
-				b.Children = validateAndPatchBlocks(b.Children)
+				b.Children = validateContentBlocks(b.Children)
 			}
 			patched = append(patched, b)
 		case notion.NumberedListItemBlock:
@@ -221,7 +238,7 @@ func validateAndPatchBlocks(blocks []notion.Block) []notion.Block {
 				continue
 			}
 			if len(b.Children) > 0 {
-				b.Children = validateAndPatchBlocks(b.Children)
+				b.Children = validateContentBlocks(b.Children)
 			}
 			patched = append(patched, b)
 		default:
@@ -248,67 +265,50 @@ func printTitle(mdPath string, replaceF, useHash bool, rewriteText string) {
 	fmt.Println("\n===== " + strings.Join(details, ", ") + " =====\n")
 }
 
-// getAllPageBlocks retrieves all blocks from a Notion page (recursively, if needed)
-func getAllPageBlocks(client *notion.Client, ctx context.Context, pageID string) ([]notion.Block, error) {
-	var blocks []notion.Block
-	startCursor := ""
-	for {
-		resp, err := client.FindBlockChildrenByID(ctx, pageID, &notion.PaginationQuery{StartCursor: startCursor})
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, resp.Results...)
-		if !resp.HasMore || resp.NextCursor == nil || *resp.NextCursor == "" {
+// updatePageTitle updates the Notion page's title using a Heading1Block.
+func updatePageTitle(client *notion.Client, ctx context.Context, pageID string, titleBlock notion.Block) error {
+	heading, ok := titleBlock.(notion.Heading1Block)
+	if !ok {
+		return fmt.Errorf("titleBlock is not a Heading1Block")
+	}
+	if len(heading.RichText) == 0 {
+		return fmt.Errorf("Heading1Block has no rich text")
+	}
+	title := heading.RichText[0].PlainText
+
+	// Find the correct title property name
+	page, err := client.FindPageByID(ctx, pageID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch page: %w", err)
+	}
+	props, ok := page.Properties.(notion.DatabasePageProperties)
+	if !ok {
+		return fmt.Errorf("unexpected properties type for page")
+	}
+	titleProp := ""
+	for propName, prop := range props {
+		if prop.Type == "title" {
+			titleProp = propName
 			break
 		}
-		startCursor = *resp.NextCursor
 	}
-	return blocks, nil
-}
-
-// filterContentHashBlock takes a list of blocks, finds the content hash block,
-// removes it from the list, and returns the new list and the found hash (or "" if not present).
-func filterContentHashBlock(blocks []notion.Block) ([]notion.Block, string) {
-	var foundHash string
-	var filtered []notion.Block
-	for _, block := range blocks {
-		if code, ok := block.(notion.CodeBlock); ok {
-			for _, rt := range code.RichText {
-				text := strings.TrimSpace(rt.PlainText)
-				var meta PageMetadata
-				if err := json.Unmarshal([]byte(text), &meta); err == nil && meta.ContentHash != "" {
-					foundHash = meta.ContentHash
-					goto skip
-				}
-			}
-		}
-		filtered = append(filtered, block)
-	skip:
+	if titleProp == "" {
+		return fmt.Errorf("no title property found on page")
 	}
-	return filtered, foundHash
-}
 
-// makeContentHashTableBlock creates a table block for the hash metadata
-func makeContentHashTableBlock(hash string) notion.Block {
-	return notion.TableBlock{
-		TableWidth:      2,
-		HasColumnHeader: false,
-		HasRowHeader:    false,
-		Children: []notion.Block{
-			notion.TableRowBlock{
-				Cells: [][]notion.RichText{
-					{{Text: &notion.Text{Content: "Automation Metadata"}}},
-					{{Text: &notion.Text{Content: ""}}},
-				},
-			},
-			notion.TableRowBlock{
-				Cells: [][]notion.RichText{
-					{{Text: &notion.Text{Content: "content_hash"}}},
-					{{Text: &notion.Text{Content: hash}}},
-				},
+	_, err = client.UpdatePage(ctx, pageID, notion.UpdatePageParams{
+		DatabasePageProperties: notion.DatabasePageProperties{
+			titleProp: notion.DatabasePageProperty{
+				Type:  "title",
+				Title: []notion.RichText{{Text: &notion.Text{Content: title}}},
 			},
 		},
+	})
+	if err != nil {
+		fmt.Printf("Error updating page title: %v\n", err)
+		return err
 	}
+	return nil
 }
 
 // Helpers to get and set a rich_text property on the Notion page (go-notion v0.11.0)
@@ -346,20 +346,6 @@ func setProperty(client *notion.Client, ctx context.Context, pageID, propName, v
 // PageMetadata is the metadata stored in the code block
 type PageMetadata struct {
 	ContentHash string `json:"content_hash"`
-}
-
-// makeContentHashCodeBlock creates a new code block for the hash as a JSON object
-func makeContentHashCodeBlock(hash string) notion.Block {
-	lang := "plain text"
-	return notion.CodeBlock{
-		RichText: []notion.RichText{{
-			Text: &notion.Text{Content: hash},
-		}},
-		Language: &lang,
-		Caption: []notion.RichText{{
-			Text: &notion.Text{Content: "Automation Metadata"},
-		}},
-	}
 }
 
 // clearPageContent deletes all child blocks of the given page using go-notion.
