@@ -21,7 +21,7 @@ import (
 func rewriteContent(mdContent []byte, mdPath, rewriteLink string) ([]byte, error) {
 	data, err := os.ReadFile(rewriteLink)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading rewrite-link mapping file: %w", err)
+		return nil, fmt.Errorf("Error reading rewrite-text mapping file: %w", err)
 	}
 
 	var singlePage map[string]string
@@ -51,8 +51,8 @@ func rewriteContent(mdContent []byte, mdPath, rewriteLink string) ([]byte, error
 		debugLog("[DEBUG] No mapping found for any key in '%s'. No rewrite applied.\n", mdPath)
 		return mdContent, nil // no mapping for this page, return original content
 	}
-	debugLog("[DEBUG] Could not decode rewrite-link mapping file as single or multi-page mapping")
-	return nil, fmt.Errorf("Error decoding rewrite-link mapping file as single or multi-page mapping")
+	debugLog("[DEBUG] Could not decode rewrite-text mapping file as single or multi-page mapping")
+	return nil, fmt.Errorf("Error decoding rewrite-text mapping file as single or multi-page mapping")
 }
 
 var (
@@ -112,7 +112,7 @@ func main() {
 
 	debugEnabled = debugFlag
 
-	debugLog("Given: \n--token '%s' \n--page '%s' \n--md '%s' \n--append '%t' \n--replace '%t' \n--use-hash '%t' \n--hash-property '%s' \n--rewrite-link '%s'\n", token, pageID, mdPath, appendF, replaceF, useHash, hashProperty, rewriteText)
+	debugLog("Given: \n--token '%s' \n--page '%s' \n--md '%s' \n--append '%t' \n--replace '%t' \n--use-hash '%t' \n--hash-property '%s' \n--rewrite-text '%s'\n", token, pageID, mdPath, appendF, replaceF, useHash, hashProperty, rewriteText)
 
 	if token == "" || pageID == "" || mdPath == "" || len(os.Args) == 1 {
 		pflag.Usage()
@@ -123,6 +123,8 @@ func main() {
 		fmt.Println("Cannot use both --append and --replace flags at the same time.")
 		os.Exit(1)
 	}
+
+	printTitle(mdPath, replaceF, useHash, rewriteText)
 
 	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
@@ -172,7 +174,7 @@ func main() {
 		fmt.Printf("Page hash (Property Name: '%s'): %s\n", contentHashPropertyName, propertyHash)
 		fmt.Printf("Content hash: %s\n", contentHash)
 		if propertyHash == contentHash {
-			fmt.Println("No content change detected. Skipping update.")
+			fmt.Println("⚠️ No content change detected. Skipping update.\n")
 			os.Exit(0)
 		}
 		if err := setProperty(client, ctx, pageID, contentHashPropertyName, contentHash); err != nil {
@@ -193,7 +195,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("✅ Page updated successfully.")
+	fmt.Println("✅ Page updated successfully.\n")
+}
+
+// printTitle prints a detailed operation title based on flags and arguments
+func printTitle(mdPath string, replaceF, useHash bool, rewriteText string) {
+	mode := "append"
+	if replaceF {
+		mode = "replace"
+	}
+	details := []string{"NotionMD Cli: Processing file '" + mdPath + "' using " + mode}
+	if useHash {
+		details = append(details, "content hash check enabled")
+	}
+	if rewriteText != "" {
+		details = append(details, "rewrite mapping: '"+rewriteText+"'")
+	}
+	fmt.Println("\n===== " + strings.Join(details, ", ") + " =====\n")
 }
 
 // getAllPageBlocks retrieves all blocks from a Notion page (recursively, if needed)
