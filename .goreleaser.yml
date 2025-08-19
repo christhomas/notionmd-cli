@@ -1,7 +1,7 @@
 project_name: notionmd-cli
 
 builds:
-  - main: ./main.go
+  - main: .
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     binary: notionmd-cli
