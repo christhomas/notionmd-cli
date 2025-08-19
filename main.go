@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 
@@ -73,60 +69,56 @@ func main() {
 		os.Exit(1)
 	}
 
-	printTitle(mdPath, replaceF, useHash, rewriteText)
+	printAppTitle(mdPath, replaceF, useHash, rewriteText)
 
+	// Read the file contents
 	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
 		fmt.Println("Error reading markdown file:", err)
 		os.Exit(1)
 	}
 
-	// Rewrite links if mapping is provided
+	// Rewrite text if mapping is provided before conversion to notion blocks
 	if rewriteText != "" {
-		mapped, err := rewriteContent(mdContent, mdPath, rewriteText)
-		if err != nil {
+		if mdContent, err = rewriteContent(mdContent, mdPath, rewriteText); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		mdContent = mapped
 	}
 
-	contentBlocks, err := notionmd.Convert(string(mdContent))
+	// Initialize Notion client
+	notionClient := NewNotionClient(token)
+
+	// First convert markdown to Notion blocks
+	blocks, err := notionmd.Convert(string(mdContent))
 	if err != nil {
-		fmt.Println("Markdown conversion failed:", err)
+		fmt.Println("Error converting markdown to Notion blocks:", err)
+		os.Exit(1)
+	}
+
+	// Then process the blocks to handle images correctly
+	blocks, err = ProcessImageBlocks(blocks, mdPath, notionClient)
+	if err != nil {
+		fmt.Printf("Warning: failed to process images: %s\n", err)
 		os.Exit(1)
 	}
 
 	// Debug all block types
-	debugLog("Found %d blocks after markdown conversion\n", len(contentBlocks))
-	for i, block := range contentBlocks {
-		debugLog("Block %d is of type: %T\n", i, block)
-
-		// Check specifically for code blocks
-		if codeBlock, ok := block.(*notion.CodeBlock); ok {
-			debugLog("Found code block at index %d\n", i)
-			if codeBlock.Language == nil {
-				debugLog("  Language is nil\n")
-			} else {
-				debugLog("  Language is '%s'\n", *codeBlock.Language)
-			}
-		}
-	}
+	debugBlocks(blocks)
 
 	// --- content_hash optimization ---
 	// Compute hash of the input markdown file
 	hashBytes := sha256.Sum256(mdContent)
 	contentHash := fmt.Sprintf("%x", hashBytes[:])
 
-	client := notion.NewClient(token)
-	ctx := context.Background()
-
-	// Validate and patch Notion blocks before sending to API
-	var titleBlock notion.Block
-	contentBlocks = validateContentBlocks(contentBlocks)
-	titleBlock, contentBlocks = filterTitleBlock(contentBlocks)
+	// Validate blocks before sending to Notion
+	blocks = validateContentBlocks(blocks)
+	titleBlock, blocks := filterTitleBlock(blocks)
 	if titleBlock != nil {
-		updatePageTitle(client, ctx, pageID, titleBlock)
+		err := notionClient.UpdatePageTitle(pageID, titleBlock)
+		if err != nil {
+			fmt.Printf("Error updating page title: %s\n", err)
+		}
 	}
 
 	if dryRun {
@@ -135,12 +127,13 @@ func main() {
 		return
 	}
 
+	// Checks the content hash property to see whether the content is different than that already published in notion
 	if useHash {
 		contentHashPropertyName := "Content Hash"
 		if hashProperty != "" {
 			contentHashPropertyName = hashProperty
 		}
-		propertyHash, err := getProperty(client, ctx, pageID, contentHashPropertyName)
+		propertyHash, err := notionClient.GetProperty(pageID, contentHashPropertyName)
 		if err != nil {
 			fmt.Printf("Error getting '%s' property: %s\n", contentHashPropertyName, err)
 			os.Exit(1)
@@ -151,19 +144,20 @@ func main() {
 			fmt.Println("⚠️ No content change detected. Skipping update.")
 			os.Exit(0)
 		}
-		if err := setProperty(client, ctx, pageID, contentHashPropertyName, contentHash); err != nil {
+		if err := notionClient.SetProperty(pageID, contentHashPropertyName, contentHash); err != nil {
 			fmt.Printf("Warning: failed to set '%s' property: %s\n", contentHashPropertyName, err)
 		}
 	}
 
+	// If we are replacing all the content with new content, we need to clear all the existing content first
 	if replaceF {
-		if err := clearPageContent(token, pageID); err != nil {
+		if err := notionClient.ClearPageContent(pageID); err != nil {
 			fmt.Printf("Error clearing Notion page: %s\n", err)
 			os.Exit(1)
 		}
 	}
 
-	if err := replacePageContent(token, pageID, contentBlocks); err != nil {
+	if err := notionClient.AddPageContent(pageID, blocks); err != nil {
 		fmt.Printf("Error updating Notion page: %s\n", err)
 		os.Exit(1)
 	}
@@ -213,6 +207,28 @@ func rewriteContent(mdContent []byte, mdPath, rewriteLink string) ([]byte, error
 func debugLog(format string, args ...interface{}) {
 	if debugEnabled {
 		fmt.Printf(format, args...)
+	}
+}
+
+func debugBlocks(blocks []notion.Block) {
+	// early dropout
+	if !debugEnabled {
+		return
+	}
+
+	debugLog("Found %d blocks after markdown conversion\n", len(blocks))
+	for i, block := range blocks {
+		debugLog("Block %d is of type: %T\n", i, block)
+
+		// Check specifically for code blocks
+		if codeBlock, ok := block.(*notion.CodeBlock); ok {
+			debugLog("Found code block at index %d\n", i)
+			if codeBlock.Language == nil {
+				debugLog("  Language is nil\n")
+			} else {
+				debugLog("  Language is '%s'\n", *codeBlock.Language)
+			}
+		}
 	}
 }
 
@@ -276,7 +292,7 @@ func processCodeBlock(i int, codeBlock notion.CodeBlock) notion.CodeBlock {
 			fmt.Printf("⚠️  Fixed code block at index %d: mapped language from '%s' to '%s'\n", i, originalLang, mappedLang)
 		}
 	}
-	fmt.Printf("⚠️  Code block at index %d has language: %s\n", i, *codeBlock.Language)
+	debugLog("⚠️  Code block at index %d has language: %s\n", i, *codeBlock.Language)
 	return codeBlock
 }
 
@@ -320,7 +336,7 @@ func validateContentBlocks(blocks []notion.Block) []notion.Block {
 }
 
 // printTitle prints a detailed operation title based on flags and arguments
-func printTitle(mdPath string, replaceF, useHash bool, rewriteText string) {
+func printAppTitle(mdPath string, replaceF, useHash bool, rewriteText string) {
 	mode := "append"
 	if replaceF {
 		mode = "replace"
@@ -333,133 +349,4 @@ func printTitle(mdPath string, replaceF, useHash bool, rewriteText string) {
 		details = append(details, "rewrite mapping: '"+rewriteText+"'")
 	}
 	fmt.Println("\n===== " + strings.Join(details, ", ") + " =====\n")
-}
-
-// updatePageTitle updates the Notion page's title using a Heading1Block.
-func updatePageTitle(client *notion.Client, ctx context.Context, pageID string, titleBlock notion.Block) error {
-	heading, ok := titleBlock.(notion.Heading1Block)
-	if !ok {
-		return fmt.Errorf("titleBlock is not a Heading1Block")
-	}
-	if len(heading.RichText) == 0 {
-		return fmt.Errorf("Heading1Block has no rich text")
-	}
-	title := heading.RichText[0].PlainText
-
-	// Find the correct title property name
-	page, err := client.FindPageByID(ctx, pageID)
-	if err != nil {
-		return fmt.Errorf("failed to fetch page: %w", err)
-	}
-	props, ok := page.Properties.(notion.DatabasePageProperties)
-	if !ok {
-		return fmt.Errorf("unexpected properties type for page")
-	}
-	titleProp := ""
-	for propName, prop := range props {
-		if prop.Type == "title" {
-			titleProp = propName
-			break
-		}
-	}
-	if titleProp == "" {
-		return fmt.Errorf("no title property found on page")
-	}
-
-	_, err = client.UpdatePage(ctx, pageID, notion.UpdatePageParams{
-		DatabasePageProperties: notion.DatabasePageProperties{
-			titleProp: notion.DatabasePageProperty{
-				Type:  "title",
-				Title: []notion.RichText{{Text: &notion.Text{Content: title}}},
-			},
-		},
-	})
-	if err != nil {
-		fmt.Printf("Error updating page title: %v\n", err)
-		return err
-	}
-	return nil
-}
-
-// Helpers to get and set a rich_text property on the Notion page (go-notion v0.11.0)
-func getProperty(client *notion.Client, ctx context.Context, pageID, propName string) (string, error) {
-	page, err := client.FindPageByID(ctx, pageID)
-	if err != nil {
-		return "", err
-	}
-	props, ok := page.Properties.(notion.DatabasePageProperties)
-	if !ok {
-		return "", nil // not a database page or unexpected type
-	}
-	prop, ok := props[propName]
-	if !ok {
-		return "", nil // property not set
-	}
-	if len(prop.RichText) > 0 {
-		return prop.RichText[0].PlainText, nil
-	}
-	return "", nil
-}
-
-func setProperty(client *notion.Client, ctx context.Context, pageID, propName, value string) error {
-	_, err := client.UpdatePage(ctx, pageID, notion.UpdatePageParams{
-		DatabasePageProperties: notion.DatabasePageProperties{
-			propName: notion.DatabasePageProperty{
-				Type:     "rich_text",
-				RichText: []notion.RichText{{Text: &notion.Text{Content: value}}},
-			},
-		},
-	})
-	return err
-}
-
-// clearPageContent deletes all child blocks of the given page using go-notion.
-func clearPageContent(token, pageID string) error {
-	client := notion.NewClient(token)
-	ctx := context.Background()
-	startCursor := ""
-	for {
-		resp, err := client.FindBlockChildrenByID(ctx, pageID, &notion.PaginationQuery{StartCursor: startCursor})
-		if err != nil {
-			return fmt.Errorf("failed to fetch children: %w", err)
-		}
-		for _, block := range resp.Results {
-			_, err := client.DeleteBlock(ctx, block.ID())
-			if err != nil {
-				return fmt.Errorf("failed to delete block %s: %w", block.ID(), err)
-			}
-		}
-		if !resp.HasMore || resp.NextCursor == nil || *resp.NextCursor == "" {
-			break
-		}
-		startCursor = *resp.NextCursor
-	}
-	return nil
-}
-
-func replacePageContent(token, pageID string, blocks []notion.Block) error {
-	url := fmt.Sprintf("https://api.notion.com/v1/blocks/%s/children", pageID)
-
-	body := map[string]interface{}{
-		"children": blocks,
-	}
-	jsonData, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("PATCH", url, bytes.NewReader(jsonData))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Notion-Version", "2022-06-28")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Notion API error %d: %s", resp.StatusCode, string(b))
-	}
-
-	return nil
 }
